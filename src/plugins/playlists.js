@@ -81,7 +81,7 @@ class PlaylistsRepository {
     const userID = typeof user === 'object' ? user.id : user;
     const playlist = await Playlist.findOne({ _id: id, author: userID });
     if (!playlist) {
-      throw new PlaylistNotFoundError({ id });
+      // throw new PlaylistNotFoundError({ id });
     }
     return playlist;
   }
