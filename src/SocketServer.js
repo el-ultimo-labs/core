@@ -133,7 +133,7 @@ class SocketServer {
 
     this.pinger = setInterval(() => {
       this.ping();
-    }, ms('10 seconds'));
+    }, ms('2 seconds'));
 
     this.recountGuests = debounce(() => {
       this.recountGuestsInternal().catch((error) => {
