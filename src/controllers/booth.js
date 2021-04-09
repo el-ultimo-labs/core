@@ -126,17 +126,28 @@ async function replaceBooth(req) {
 }
 
 async function addVote(uw, userID, direction) {
+  const boothType = {
+    '-1': 'booth:downvotes',
+    1: 'booth:upvotes',
+    2: 'booth:sadvotes',
+  };
+
   const results = await uw.redis.multi()
     .srem('booth:upvotes', userID)
     .srem('booth:downvotes', userID)
-    .sadd(direction > 0 ? 'booth:upvotes' : 'booth:downvotes', userID)
+    .srem('booth:sadvotes', userID)
+    .sadd(boothType[direction], userID)
     .exec();
+
   const replacedUpvote = results[0][1] !== 0;
   const replacedDownvote = results[1][1] !== 0;
+  const replacedSadvote = results[2][1] !== 0;
 
-  // Replaced an upvote by an upvote or a downvote by a downvote: the vote didn't change.
-  // We don't need to broadcast the non-change to everyone.
-  if ((replacedUpvote && direction > 0) || (replacedDownvote && direction < 0)) {
+  // Replaced an upvote by an upvote or a downvote by a downvote or a sadvote by a sadvote:
+  // the vote didn't change. We don't need to broadcast the non-change to everyone.
+  if ((replacedUpvote && direction === 1)
+    || (replacedDownvote && direction === -1)
+    || (replacedSadvote && direction === 2)) {
     return;
   }
 
@@ -174,9 +185,10 @@ async function getVote(req) {
     throw new HTTPError(412, 'Cannot get vote for media that is not currently playing');
   }
 
-  const [upvoted, downvoted] = await Promise.all([
+  const [upvoted, downvoted, sadvoted] = await Promise.all([
     uw.redis.sismember('booth:upvotes', user.id),
     uw.redis.sismember('booth:downvotes', user.id),
+    uw.redis.sismember('booth:sadvotes', user.id),
   ]);
 
   let direction = 0;
@@ -184,6 +196,8 @@ async function getVote(req) {
     direction = 1;
   } else if (downvoted) {
     direction = -1;
+  } else if (sadvoted) {
+    direction = 2;
   }
 
   return toItemResponse({ direction });
@@ -208,11 +222,7 @@ async function vote(req) {
     throw new HTTPError(412, 'Cannot vote for media that is not currently playing');
   }
 
-  if (direction > 0) {
-    await addVote(uw, user.id, 1);
-  } else {
-    await addVote(uw, user.id, -1);
-  }
+  await addVote(uw, user.id, direction);
 
   return toItemResponse({});
 }

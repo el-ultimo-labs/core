@@ -64,6 +64,7 @@ class Booth {
     const { redis } = this.uw;
 
     const results = await redis.pipeline()
+      .smembers('booth:sadvotes')
       .smembers('booth:upvotes')
       .smembers('booth:downvotes')
       .smembers('booth:favorites')
@@ -71,9 +72,10 @@ class Booth {
 
     // TODO what if there is an error?
     const voteStats = {
-      upvotes: results[0][1],
-      downvotes: results[1][1],
-      favorites: results[2][1],
+      sadvotes: results[0][1],
+      upvotes: results[1][1],
+      downvotes: results[2][1],
+      favorites: results[3][1],
     };
 
     return voteStats;
@@ -146,6 +148,7 @@ class Booth {
     return this.uw.redis.del([
       'booth:historyID',
       'booth:currentDJ',
+      'booth:sadvotes',
       'booth:upvotes',
       'booth:downvotes',
       'booth:favorites',
@@ -154,7 +157,7 @@ class Booth {
 
   update(next) {
     return this.uw.redis.multi()
-      .del(['booth:upvotes', 'booth:downvotes', 'booth:favorites'])
+      .del(['booth:sadvotes', 'booth:upvotes', 'booth:downvotes', 'booth:favorites'])
       .set('booth:historyID', next.id)
       .set('booth:currentDJ', next.user.id)
       .exec();

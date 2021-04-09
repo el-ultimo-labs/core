@@ -170,7 +170,7 @@ exports.vote = {
   body: {
     type: 'object',
     properties: {
-      direction: { enum: [-1, 1] },
+      direction: { enum: [-1, 1, 2] },
     },
     required: ['direction'],
   },
