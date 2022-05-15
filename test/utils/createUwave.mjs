@@ -1,14 +1,13 @@
-'use strict';
+import 'dotenv/config';
+import { once } from 'events';
+import { spawn } from 'child_process';
+import getPort from 'get-port';
+import Redis from 'ioredis';
+import uwave from 'u-wave-core';
+import deleteDatabase from './deleteDatabase.mjs';
+import testPlugin from './plugin.mjs';
 
-const { once } = require('events');
-const { spawn } = require('child_process');
-const getPort = require('get-port');
-const Redis = require('ioredis');
-const deleteDatabase = require('./deleteDatabase');
-const uwave = require('../..');
-const testPlugin = require('./plugin');
-
-const DB_HOST = process.env.MONGODB_HOST || 'localhost';
+const DB_HOST = process.env.MONGODB_HOST ?? 'localhost';
 
 /**
  * Create a separate in-memory redis instance to run tests against.
@@ -47,7 +46,7 @@ async function createIsolatedRedis() {
  * This can be used to run tests on CI.
  */
 function createRedisConnection() {
-  const url = process.env.REDIS_URL || 'redis://localhost:6379';
+  const url = process.env.REDIS_URL ?? 'redis://localhost:6379';
 
   async function close() {
     const redis = new Redis(url);
@@ -63,7 +62,7 @@ function createRedisConnection() {
 
 async function createUwave(name, options) {
   const redisServer = process.env.REDIS_URL
-    ? await createRedisConnection()
+    ? createRedisConnection()
     : await createIsolatedRedis();
   const mongoUrl = `mongodb://${DB_HOST}/uw_test_${name}`;
 
@@ -93,4 +92,4 @@ async function createUwave(name, options) {
   return uw;
 }
 
-module.exports = createUwave;
+export default createUwave;

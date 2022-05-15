@@ -1,20 +1,19 @@
 'use strict';
 
-module.exports = {
-  extends: ['airbnb-base', 'plugin:node/recommended'],
+const pkg = require('./package.json');
 
-  plugins: ['node'],
+module.exports = {
+  extends: ['airbnb-base', 'plugin:node/recommended', 'plugin:@typescript-eslint/recommended'],
+
+  plugins: ['node', '@typescript-eslint'],
 
   parserOptions: {
-    ecmaVersion: 2020,
     sourceType: 'script',
   },
 
   rules: {
     // We're not transpiling
     strict: ['error', 'global'],
-
-    'node/no-unpublished-require': 'off',
 
     // MongoDB IDs
     'no-underscore-dangle': ['error', { allow: ['_id'] }],
@@ -44,12 +43,54 @@ module.exports = {
 
   overrides: [
     {
+      files: ['*.js'],
+      rules: {
+        '@typescript-eslint/no-var-requires': 'off',
+      },
+    },
+    {
+      files: ['*.ts'],
+      parser: '@typescript-eslint/parser',
+      parserOptions: {
+        sourceType: 'module',
+      },
+      rules: {
+        'node/no-unsupported-features/es-syntax': 'off',
+      },
+    },
+    {
+      files: ['*.mjs'],
+      parserOptions: {
+        sourceType: 'module',
+      },
+      rules: {
+        'import/extensions': ['error', 'ignorePackages'],
+        'import/no-unresolved': ['error', {
+          ignore: [pkg.name], // not ideal!
+        }],
+      },
+      settings: {
+        node: {
+          allowModules: [pkg.name],
+        },
+      },
+    },
+    {
       files: ['test/**/*.js'],
       env: {
         mocha: true,
       },
       rules: {
         'node/no-unpublished-require': 'off',
+      },
+    },
+    {
+      files: ['test/**/*.mjs'],
+      env: {
+        mocha: true,
+      },
+      rules: {
+        'node/no-unpublished-import': 'off',
       },
     },
   ],

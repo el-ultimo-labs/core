@@ -1,9 +1,7 @@
-'use strict';
-
-const assert = require('assert');
-const delay = require('delay');
-const supertest = require('supertest');
-const createUwave = require('./utils/createUwave');
+import assert from 'assert';
+import delay from 'delay';
+import supertest from 'supertest';
+import createUwave from './utils/createUwave.mjs';
 
 describe('Booth', () => {
   describe('PUT /booth/:historyID/vote', () => {
@@ -21,7 +19,7 @@ describe('Booth', () => {
       await supertest(uw.server)
         .put(`/api/booth/${historyID}/vote`)
         .send({ direction: 1 })
-        .expect(403);
+        .expect(401);
     });
 
     it('validates input', async () => {
@@ -61,8 +59,8 @@ describe('Booth', () => {
       const token = await uw.test.createTestSessionToken(user);
       const ws = await uw.test.connectToWebSocketAs(user);
       const receivedMessages = [];
-      ws.on('message', (data) => {
-        receivedMessages.push(JSON.parse(data));
+      ws.on('message', (data, isBinary) => {
+        receivedMessages.push(JSON.parse(isBinary ? data.toString() : data));
       });
 
       // Pretend that a DJ exists

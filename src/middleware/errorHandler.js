@@ -9,6 +9,17 @@ const {
 
 const debug = createDebug('uwave:http:error');
 
+/**
+ * @typedef {object} SerializedError
+ * @prop {number} status
+ * @prop {string} code
+ * @prop {string} title
+ * @prop {string} [source]
+ */
+
+/**
+ * @param {SerializedError[]} errors
+ */
 function toErrorResponse(errors) {
   return {
     data: {},
@@ -17,32 +28,23 @@ function toErrorResponse(errors) {
   };
 }
 
+/**
+ * @param {any} err
+ * @returns {SerializedError[]}
+ */
 function serializeError(err) {
   if (err instanceof CombinedError) {
-    return err.errors.reduce(
-      (errors, one) => errors.concat(serializeError(one)),
-      [],
-    );
+    return err.errors.flatMap((error) => serializeError(error));
   }
 
   debug(err);
 
   if (err instanceof APIError) {
     return [{
-      status: err.status || 500,
-      code: err.code || 'api-error',
+      status: err.status ?? 500,
+      code: err.code ?? 'api-error',
       title: err.message,
     }];
-  }
-  if (err.isJoi) {
-    return err.details.map((error) => ({
-      status: 400,
-      code: error.type,
-      title: error.message,
-      source: {
-        path: error.path,
-      },
-    }));
   }
   if (err.name === 'ValidationError') {
     return Object.values(err.errors).map((error) => ({
@@ -59,8 +61,9 @@ function serializeError(err) {
     }];
   }
   if (err.expose) {
+    /** @type {SerializedError} */
     const apiError = {
-      status: err.status || 400,
+      status: err.status ?? 400,
       code: err.code,
       title: err.message,
     };
@@ -76,6 +79,10 @@ function serializeError(err) {
   }];
 }
 
+/**
+ * @param {{ onError?: (req: import('express').Request, error: Error) => void}} [options]
+ * @returns {import('express').ErrorRequestHandler}
+ */
 function errorHandler(options = {}) {
   return (errors, req, res, next) => {
     if (errors) {

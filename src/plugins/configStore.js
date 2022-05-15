@@ -1,20 +1,12 @@
 'use strict';
 
-const mongoose = require('mongoose');
 const EventEmitter = require('events');
 const Ajv = require('ajv/dist/2019').default;
-const formats = require('ajv-formats');
+const formats = require('ajv-formats').default;
+const { omit } = require('lodash');
 const ValidationError = require('../errors/ValidationError');
 
-const { Schema } = mongoose;
-
-const configSchema = new Schema({
-  _id: { type: String },
-}, {
-  collection: 'config_store',
-  strict: false,
-  toJSON: { versionKey: false },
-});
+/** @typedef {import('../models').User} User */
 
 /**
  * Extensible configuration store.
@@ -24,29 +16,34 @@ const configSchema = new Schema({
  * check that the configuration is correct.
  */
 class ConfigStore {
+  #uw;
+
+  #ajv;
+
+  /** @type {Map<string, import('ajv').ValidateFunction<unknown>>} */
+  #registry = new Map();
+
   /**
-   * @param {import('mongoose').Connection} mongo
+   * @param {import('../Uwave')} uw
    */
-  constructor(mongo) {
-    this.ConfigModel = mongo.model('ConfigStore', configSchema);
-    this.ajv = new Ajv({
+  constructor(uw) {
+    this.#uw = uw;
+    this.#ajv = new Ajv({
       useDefaults: true,
       // Allow unknown keywords (`uw:xyz`)
       strict: false,
       strictTypes: true,
     });
-    formats(this.ajv);
+    formats(this.#ajv);
     /* eslint-disable global-require */
-    this.ajv.addMetaSchema(require('ajv/dist/refs/json-schema-draft-07.json'));
-    this.ajv.addSchema(require('../schemas/definitions.json'));
+    this.#ajv.addMetaSchema(require('ajv/dist/refs/json-schema-draft-07.json'));
+    this.#ajv.addSchema(require('../schemas/definitions.json'));
     /* eslint-enable global-require */
 
-    this.emitter = new EventEmitter();
-    this.registry = new Map();
-
-    this.on = this.emitter.on.bind(this);
-    this.off = this.emitter.removeListener.bind(this);
-    this.emit = this.emitter.emit.bind(this);
+    const emitter = new EventEmitter();
+    this.on = emitter.on.bind(emitter);
+    this.off = emitter.removeListener.bind(emitter);
+    this.emit = emitter.emit.bind(emitter);
   }
 
   /**
@@ -55,7 +52,9 @@ class ConfigStore {
    * @private
    */
   async save(key, values) {
-    await this.ConfigModel.findByIdAndUpdate(
+    const { Config } = this.#uw.models;
+
+    await Config.findByIdAndUpdate(
       key,
       { _id: key, ...values },
       { upsert: true },
@@ -64,28 +63,29 @@ class ConfigStore {
 
   /**
    * @param {string} key
-   * @returns {Promise<object>}
+   * @returns {Promise<object|null>}
    * @private
    */
   async load(key) {
-    const model = await this.ConfigModel.findById(key);
+    const { Config } = this.#uw.models;
+
+    const model = await Config.findById(key);
     if (!model) return null;
 
     const doc = model.toJSON();
-    delete doc._id;
-    return doc;
+    return omit(doc, '_id');
   }
 
   /**
    * Add a config group.
    *
    * @param {string} key - The name of the config group.
-   * @param {import('json-schema').JSONSchema7} schema - The JSON schema that the settings must
+   * @param {import('ajv').SchemaObject} schema - The JSON schema that the settings must
    *     follow.
    * @public
    */
   register(key, schema) {
-    this.registry.set(key, this.ajv.compile(schema));
+    this.#registry.set(key, this.#ajv.compile(schema));
   }
 
   /**
@@ -97,10 +97,10 @@ class ConfigStore {
    * @public
    */
   async get(key) {
-    const validate = this.registry.get(key);
+    const validate = this.#registry.get(key);
     if (!validate) return undefined;
 
-    const config = (await this.load(key)) || {};
+    const config = (await this.load(key)) ?? {};
     // Allowed to fail--just fills in defaults
     validate(config);
 
@@ -118,10 +118,10 @@ class ConfigStore {
    * @public
    */
   async set(key, settings, { user } = {}) {
-    const validate = this.registry.get(key);
+    const validate = this.#registry.get(key);
     if (validate) {
       if (!validate(settings)) {
-        throw new ValidationError(validate.errors, this.ajv);
+        throw new ValidationError(validate.errors, this.#ajv);
       }
     }
 
@@ -133,12 +133,14 @@ class ConfigStore {
   /**
    * Get *all* settings.
    *
-   * @returns {{ [key: string]: object }}
+   * @returns {Promise<{ [key: string]: object }>}
    */
   async getAllConfig() {
-    const all = await this.ConfigModel.find();
+    const { Config } = this.#uw.models;
+
+    const all = await Config.find();
     const object = Object.create(null);
-    for (const [key, validate] of this.registry.entries()) {
+    for (const [key, validate] of this.#registry.entries()) {
       const model = all.find((m) => m._id === key);
       object[key] = model ? model.toJSON() : {};
       delete object[key]._id;
@@ -148,12 +150,12 @@ class ConfigStore {
   }
 
   /**
-   * @returns {import('json-schema').JSONSchema7}
+   * @returns {import('ajv').SchemaObject}
    */
   getSchema() {
     const properties = Object.create(null);
     const required = [];
-    for (const [key, validate] of this.registry.entries()) {
+    for (const [key, validate] of this.#registry.entries()) {
       properties[key] = validate.schema;
       required.push(key);
     }
@@ -166,8 +168,11 @@ class ConfigStore {
   }
 }
 
+/**
+ * @param {import('../Uwave')} uw
+ */
 async function configStorePlugin(uw) {
-  uw.config = new ConfigStore(uw.mongo);
+  uw.config = new ConfigStore(uw);
   uw.config.on('set', (key, value, user) => {
     uw.publish('configStore:update', {
       key,
@@ -177,3 +182,4 @@ async function configStorePlugin(uw) {
 }
 
 module.exports = configStorePlugin;
+module.exports.ConfigStore = ConfigStore;

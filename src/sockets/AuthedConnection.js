@@ -9,6 +9,11 @@ const sjson = require('secure-json-parse');
 const debug = createDebug('uwave:api:sockets:authed');
 
 class AuthedConnection extends EventEmitter {
+  /**
+   * @param {import('../Uwave')} uw
+   * @param {import('ws')} socket
+   * @param {import('../models').User} user
+   */
   constructor(uw, socket, user) {
     super();
     this.uw = uw;
@@ -25,19 +30,29 @@ class AuthedConnection extends EventEmitter {
     this.sendWaiting();
   }
 
+  /**
+   * @private
+   */
   get key() {
     return `http-api:disconnected:${this.user.id}`;
   }
 
+  /**
+   * @private
+   */
   get messagesKey() {
     return `http-api:disconnected:${this.user.id}:messages`;
   }
 
+  /**
+   * @private
+   */
   async sendWaiting() {
     const wasDisconnected = await this.uw.redis.exists(this.key);
     if (!wasDisconnected) {
       return;
     }
+    /** @type {string[]} */
     const messages = await this.uw.redis.lrange(this.messagesKey, 0, -1);
     if (messages.length) {
       debug('queued', this.user.id, this.user.username, ...messages);
@@ -51,13 +66,21 @@ class AuthedConnection extends EventEmitter {
     await this.uw.redis.del(this.key, this.messagesKey);
   }
 
+  /**
+   * @param {string|Buffer} raw
+   * @private
+   */
   onMessage(raw) {
-    const { command, data } = sjson.safeParse(raw) || {};
+    const { command, data } = sjson.safeParse(raw) ?? {};
     if (command) {
       this.emit('command', command, data);
     }
   }
 
+  /**
+   * @param {string} command
+   * @param {import('type-fest').JsonValue} data
+   */
   send(command, data) {
     this.socket.send(JSON.stringify({ command, data }));
     this.lastMessage = Date.now();

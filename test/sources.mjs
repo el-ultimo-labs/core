@@ -1,10 +1,8 @@
-'use strict';
-
-const assert = require('assert');
-const supertest = require('supertest');
-const sinon = require('sinon');
-const { Source } = require('../src/Source');
-const createUwave = require('./utils/createUwave');
+import assert from 'assert';
+import supertest from 'supertest';
+import sinon from 'sinon';
+import { Source } from '../src/Source.js';
+import createUwave from './utils/createUwave.mjs';
 
 describe('Media Sources', () => {
   let uw;
@@ -34,6 +32,18 @@ describe('Media Sources', () => {
       get: get, // eslint-disable-line object-shorthand
     };
   }
+
+  const testSourceWithPlayHook = {
+    api: 2,
+    name: 'test-source-with-play',
+    async search() { throw new Error('unimplemented'); },
+    async get() { throw new Error('unimplemented'); },
+    async play(context, media) {
+      return {
+        urn: `${media.sourceType}:${media.sourceID}`,
+      };
+    },
+  };
 
   it('should register sources from objects', () => {
     uw.source(testSourceObject);
@@ -86,14 +96,24 @@ describe('Media Sources', () => {
     assert.deepStrictEqual(results, { sourceType: 'test-source', sourceID: id });
   });
 
+  it('should respond to play(media) API calls', async () => {
+    uw.source(testSourceWithPlayHook);
+    const sourceData = await uw.source('test-source-with-play').play(null, {
+      sourceID: '1234',
+      sourceType: 'test-source-with-play',
+    });
+    assert.deepStrictEqual(sourceData, {
+      urn: 'test-source-with-play:1234',
+    });
+  });
+
   describe('GET /search/:source', () => {
     it('should reject unauthenticated requests', async () => {
       uw.source(testSource);
       await supertest(uw.server)
         .get('/api/search/test-source')
-        .set('accept', 'application/json')
         .send()
-        .expect(403);
+        .expect(401);
     });
 
     it('responds to an authenticated request', async () => {

@@ -1,0 +1,18 @@
+{
+  "extends": "@tsconfig/node14/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "useUnknownInCatchVariables": false,
+    "allowJs": true,
+    "checkJs": true,
+    "resolveJsonModule": true,
+    "outDir": "types",
+    "declaration": true,
+    "emitDeclarationOnly": true
+  },
+  "include": [
+    "src/**/*.js",
+    "src/**/*.ts",
+    "src/schemas/*.json"
+  ]
+}

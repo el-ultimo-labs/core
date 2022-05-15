@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+/** @type {import('i18next').default} */
+// @ts-expect-error TS2322 Fixing a mismatch in the commonjs and ES module versions?
 const i18next = require('i18next');
 const YAML = require('yaml');
 

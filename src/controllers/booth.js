@@ -1,7 +1,8 @@
 'use strict';
 
+const assert = require('assert');
+const mongoose = require('mongoose');
 const {
-  CombinedError,
   HTTPError,
   PermissionError,
   HistoryEntryNotFoundError,
@@ -13,6 +14,11 @@ const toItemResponse = require('../utils/toItemResponse');
 const toListResponse = require('../utils/toListResponse');
 const toPaginatedResponse = require('../utils/toPaginatedResponse');
 
+const { ObjectId } = mongoose.Types;
+
+/**
+ * @param {import('../Uwave')} uw
+ */
 async function getBoothData(uw) {
   const { booth } = uw;
 
@@ -22,20 +28,25 @@ async function getBoothData(uw) {
     return null;
   }
 
-  await historyEntry.populate('media.media').execPopulate();
+  await historyEntry.populate('media.media');
+  // @ts-expect-error TS2322: We just populated historyEntry.media.media
+  const media = booth.getMediaForPlayback(historyEntry);
 
   const stats = await booth.getCurrentVoteStats();
 
   return {
     historyID: historyEntry.id,
     playlistID: `${historyEntry.playlist}`,
-    playedAt: Date.parse(historyEntry.playedAt),
+    playedAt: historyEntry.playedAt.getTime(),
     userID: `${historyEntry.user}`,
-    media: historyEntry.media,
+    media,
     stats,
   };
 }
 
+/**
+ * @type {import('../types').Controller}
+ */
 async function getBooth(req) {
   const uw = req.uwave;
 
@@ -44,10 +55,21 @@ async function getBooth(req) {
   return toItemResponse(data, { url: req.fullUrl });
 }
 
+/**
+ * @param {import('../Uwave')} uw
+ * @returns {Promise<string|null>}
+ */
 function getCurrentDJ(uw) {
   return uw.redis.get('booth:currentDJ');
 }
 
+/**
+ * @param {import('../Uwave')} uw
+ * @param {string|null} moderatorID - `null` if a user is skipping their own turn.
+ * @param {string} userID
+ * @param {string|null} reason
+ * @param {{ remove?: boolean }} [opts]
+ */
 async function doSkip(uw, moderatorID, userID, reason, opts = {}) {
   uw.publish('booth:skip', {
     moderatorID,
@@ -60,13 +82,27 @@ async function doSkip(uw, moderatorID, userID, reason, opts = {}) {
   });
 }
 
+/**
+ * @typedef {object} SkipUserAndReason
+ * @prop {string} userID
+ * @prop {string} reason
+ *
+ * @typedef {{
+ *   remove?: boolean,
+ *   userID?: string,
+ *   reason?: string,
+ * } & (SkipUserAndReason | {})} SkipBoothBody
+ */
+
+/**
+ * @type {import('../types').AuthenticatedController<{}, {}, SkipBoothBody>}
+ */
 async function skipBooth(req) {
   const { user } = req;
   const { userID, reason, remove } = req.body;
   const { acl } = req.uwave;
 
-  const skippingSelf = (!userID && !reason)
-    || userID === user.id;
+  const skippingSelf = (!userID && !reason) || userID === user.id;
   const opts = { remove: !!remove };
 
   if (skippingSelf) {
@@ -80,25 +116,25 @@ async function skipBooth(req) {
     return toItemResponse({});
   }
 
-  const errors = [];
   if (!await acl.isAllowed(user, 'booth.skip.other')) {
-    errors.push(new PermissionError('You need to be a moderator to do this'));
-  }
-  if (typeof userID !== 'string') {
-    errors.push(new HTTPError(422, 'userID: Expected a string'));
-  }
-  if (typeof reason !== 'string') {
-    errors.push(new HTTPError(422, 'reason: Expected a string'));
-  }
-  if (errors.length > 0) {
-    throw new CombinedError(errors);
+    throw new PermissionError({ requiredRole: 'booth.skip.other' });
   }
 
+  // @ts-expect-error TS2345 pretending like `userID` is definitely defined here
+  // TODO I think the typescript error is actually correct so we should fix this
   await doSkip(req.uwave, user.id, userID, reason, opts);
 
   return toItemResponse({});
 }
 
+/**
+ * @typedef {object} ReplaceBoothBody
+ * @prop {string} userID
+ */
+
+/**
+ * @type {import('../types').AuthenticatedController<{}, {}, ReplaceBoothBody>}
+ */
 async function replaceBooth(req) {
   const uw = req.uwave;
   const moderatorID = req.user.id;
@@ -125,6 +161,11 @@ async function replaceBooth(req) {
   return toItemResponse({});
 }
 
+/**
+ * @param {import('../Uwave')} uw
+ * @param {string} userID
+ * @param {1|-1|2} direction
+ */
 async function addVote(uw, userID, direction) {
   const boothType = {
     '-1': 'booth:downvotes',
@@ -138,6 +179,7 @@ async function addVote(uw, userID, direction) {
     .srem('booth:sadvotes', userID)
     .sadd(boothType[direction], userID)
     .exec();
+  assert(results);
 
   const replacedUpvote = results[0][1] !== 0;
   const replacedDownvote = results[1][1] !== 0;
@@ -156,7 +198,13 @@ async function addVote(uw, userID, direction) {
   });
 }
 
-// Old way of voting: over the WebSocket
+/**
+ * Old way of voting: over the WebSocket
+ *
+ * @param {import('../Uwave')} uw
+ * @param {string} userID
+ * @param {1|-1} direction
+ */
 async function socketVote(uw, userID, direction) {
   const currentDJ = await getCurrentDJ(uw);
   if (currentDJ !== null && currentDJ !== userID) {
@@ -170,6 +218,14 @@ async function socketVote(uw, userID, direction) {
   }
 }
 
+/**
+ * @typedef {object} GetVoteParams
+ * @prop {string} historyID
+ */
+
+/**
+ * @type {import('../types').AuthenticatedController<GetVoteParams>}
+ */
 async function getVote(req) {
   const { uwave: uw, user } = req;
   const { historyID } = req.params;
@@ -203,6 +259,17 @@ async function getVote(req) {
   return toItemResponse({ direction });
 }
 
+/**
+ * @typedef {object} VoteParams
+ * @prop {string} historyID
+ *
+ * @typedef {object} VoteBody
+ * @prop {1|-1} direction
+ */
+
+/**
+ * @type {import('../types').AuthenticatedController<VoteParams, {}, VoteBody>}
+ */
 async function vote(req) {
   const { uwave: uw, user } = req;
   const { historyID } = req.params;
@@ -227,14 +294,22 @@ async function vote(req) {
   return toItemResponse({});
 }
 
+/**
+ * @typedef {object} FavoriteBody
+ * @prop {string} playlistID
+ * @prop {string} historyID
+ */
+
+/**
+ * @type {import('../types').AuthenticatedController<{}, {}, FavoriteBody>}
+ */
 async function favorite(req) {
   const { user } = req;
   const { playlistID, historyID } = req.body;
   const uw = req.uwave;
   const { PlaylistItem, HistoryEntry } = uw.models;
 
-  const historyEntry = await HistoryEntry.findById(historyID)
-    .populate('media.media');
+  const historyEntry = await HistoryEntry.findById(historyID);
 
   if (!historyEntry) {
     throw new HistoryEntryNotFoundError({ id: historyID });
@@ -243,16 +318,15 @@ async function favorite(req) {
     throw new CannotSelfFavoriteError();
   }
 
-  const playlist = await uw.playlists.getUserPlaylist(user, playlistID);
+  const playlist = await uw.playlists.getUserPlaylist(user, new ObjectId(playlistID));
   if (!playlist) {
     throw new PlaylistNotFoundError({ id: playlistID });
   }
 
   // `.media` has the same shape as `.item`, but is guaranteed to exist and have
   // the same properties as when the playlist item was actually played.
-  const playlistItem = new PlaylistItem(historyEntry.media.toJSON());
-
-  await playlistItem.save();
+  const itemProps = historyEntry.media.toJSON();
+  const playlistItem = await PlaylistItem.create(itemProps);
 
   playlist.media.push(playlistItem.id);
 
@@ -274,6 +348,13 @@ async function favorite(req) {
   });
 }
 
+/**
+ * @typedef {object} GetRoomHistoryQuery
+ * @prop {import('../types').PaginationQuery & { media?: string }} [filter]
+ */
+/**
+ * @type {import('../types').Controller<never, GetRoomHistoryQuery, never>}
+ */
 async function getHistory(req) {
   const filter = {};
   const pagination = getOffsetPagination(req.query, {

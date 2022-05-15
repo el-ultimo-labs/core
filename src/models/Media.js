@@ -4,6 +4,25 @@ const mongoose = require('mongoose');
 
 const { Schema } = mongoose;
 
+/**
+ * @typedef {object} LeanMedia
+ * @prop {import('mongodb').ObjectId} _id
+ * @prop {string} sourceID
+ * @prop {string} sourceType
+ * @prop {object} sourceData
+ * @prop {string} artist
+ * @prop {string} title
+ * @prop {number} duration
+ * @prop {string} thumbnail
+ * @prop {Date} createdAt
+ * @prop {Date} updatedAt
+ *
+ * @typedef {mongoose.Document<LeanMedia["_id"], {}, LeanMedia> & LeanMedia} Media
+ */
+
+/**
+ * @type {mongoose.Schema<Media, mongoose.Model<Media>>}
+ */
 const schema = new Schema({
   sourceID: {
     type: String, max: 128, required: true, index: true,
@@ -16,12 +35,14 @@ const schema = new Schema({
     type: String,
     max: 128,
     required: true,
+    /** @type {(name: string) => string} */
     set: (artist) => artist.normalize('NFKC'),
   },
   title: {
     type: String,
     max: 128,
     required: true,
+    /** @type {(name: string) => string} */
     set: (title) => title.normalize('NFKC'),
   },
   duration: { type: Number, min: 0, default: 0 },

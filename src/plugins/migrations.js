@@ -1,28 +1,28 @@
 'use strict';
 
 const path = require('path');
-const RedLock = require('redlock');
-const mongoose = require('mongoose');
+const RedLock = require('redlock').default;
 const { Umzug } = require('umzug');
 const debug = require('debug')('uwave:migrate');
 
-const { Schema } = mongoose;
-
+/**
+ * @type {import('umzug').LogFn}
+ */
 function log(record) {
   debug(record.event, record.name || record.path || record);
 }
 
-const migrationSchema = new Schema({
-  migrationName: { type: String, required: true },
-}, {
-  timestamps: true,
-  collection: 'migrations',
-});
+/**
+ * @typedef {import('../Uwave')} Uwave
+ */
 
 /**
  * Custom MongoDBStorage based on Mongoose and with timestamps.
  */
 const mongooseStorage = {
+  /**
+   * @param {import('umzug').MigrationParams<Uwave>} params
+   */
   async logMigration({ name, context: uw }) {
     const { Migration } = uw.models;
 
@@ -31,6 +31,9 @@ const mongooseStorage = {
     });
   },
 
+  /**
+   * @param {import('umzug').MigrationParams<Uwave>} params
+   */
   async unlogMigration({ name, context: uw }) {
     const { Migration } = uw.models;
 
@@ -39,9 +42,13 @@ const mongooseStorage = {
     });
   },
 
+  /**
+   * @param {{ context: Uwave }} params
+   */
   async executed({ context: uw }) {
     const { Migration } = uw.models;
 
+    /** @type {{ migrationName: string }[]} */
     const documents = await Migration.find({})
       .select({ migrationName: 1 })
       .lean();
@@ -49,10 +56,18 @@ const mongooseStorage = {
   },
 };
 
+/**
+ * @typedef {import('umzug').InputMigrations<import('../Uwave')>} MigrateOptions
+ * @typedef {(opts: MigrateOptions) => Promise<void>} Migrate
+ */
+
+/**
+ * @param {import('../Uwave')} uw
+ */
 async function migrationsPlugin(uw) {
   const redLock = new RedLock([uw.redis]);
-  uw.models.Migration = uw.mongo.model('Migration', migrationSchema);
 
+  /** @type {Migrate} */
   async function migrate(migrations) {
     const migrator = new Umzug({
       migrations,
@@ -68,12 +83,9 @@ async function migrationsPlugin(uw) {
       },
     });
 
-    const lock = await redLock.lock('migrate', 10000);
-    try {
+    await redLock.using(['migrate'], 10000, async () => {
       await migrator.up();
-    } finally {
-      await lock.unlock();
-    }
+    });
   }
   uw.migrate = migrate;
 

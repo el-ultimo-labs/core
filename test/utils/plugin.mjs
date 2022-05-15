@@ -1,9 +1,7 @@
-'use strict';
-
-const events = require('events');
-const mongoose = require('mongoose');
-const jwt = require('jsonwebtoken');
-const WebSocket = require('ws');
+import events from 'events';
+import mongoose from 'mongoose';
+import jwt from 'jsonwebtoken';
+import WebSocket from 'ws';
 
 async function testPlugin(uw) {
   const { User } = uw.models;
@@ -30,8 +28,8 @@ async function testPlugin(uw) {
 
     ws.send(token);
 
-    const buffer = await events.once(ws, 'message');
-    const data = JSON.parse(buffer);
+    const [buffer, isBinary] = await events.once(ws, 'message');
+    const data = JSON.parse(isBinary ? buffer.toString() : buffer);
 
     if (data.command === 'error') {
       throw new Error(data.data);
@@ -43,7 +41,7 @@ async function testPlugin(uw) {
   }
 
   async function createTestSessionToken(user) {
-    const token = await jwt.sign(
+    const token = jwt.sign(
       { id: user.id },
       uw.options.secret,
       { expiresIn: '1d' },
@@ -58,4 +56,4 @@ async function testPlugin(uw) {
   };
 }
 
-module.exports = testPlugin;
+export default testPlugin;

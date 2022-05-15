@@ -1,53 +1,57 @@
 'use strict';
 
 const { clamp } = require('lodash');
-const NotFoundError = require('../errors/NotFoundError');
-const PermissionError = require('../errors/PermissionError');
-const { UserNotFoundError, EmptyPlaylistError } = require('../errors');
+const {
+  PermissionError,
+  UserNotFoundError,
+  EmptyPlaylistError,
+  WaitlistLockedError,
+  AlreadyInWaitlistError,
+  UserNotInWaitlistError,
+  UserIsPlayingError,
+} = require('../errors');
 const routes = require('../routes/waitlist');
 
 /**
- * @typedef {import('../Uwave')} Uwave
- */
-
-/**
- * @typedef {object} User
+ * @typedef {import('../models').User} User
  */
 
 /**
  * @param {string[]} waitlist
  * @param {string} userID
- * @return {boolean}
+ * @returns {boolean}
  */
 function isInWaitlist(waitlist, userID) {
   return waitlist.some((waitingID) => waitingID === userID);
 }
 
 class Waitlist {
+  #uw;
+
   /**
-   * @param {Uwave} uw
+   * @param {import('../Uwave')} uw
    */
   constructor(uw) {
-    this.uw = uw;
+    this.#uw = uw;
   }
 
   /**
    * @private
    */
   getCurrentDJ() {
-    return this.uw.redis.get('booth:currentDJ');
+    return this.#uw.redis.get('booth:currentDJ');
   }
 
   /**
    * @private
    */
   async isBoothEmpty() {
-    return !(await this.uw.redis.get('booth:historyID'));
+    return !(await this.#uw.redis.get('booth:historyID'));
   }
 
   /**
    * @param {string} userID
-   * @return {Promise<boolean>}
+   * @returns {Promise<boolean>}
    * @private
    */
   async isCurrentDJ(userID) {
@@ -56,43 +60,47 @@ class Waitlist {
   }
 
   /**
-   * @param {string} userID
-   * @return {Promise<boolean>}
+   * @param {User} user
+   * @returns {Promise<boolean>}
    * @private
    */
-  async hasValidPlaylist(userID) {
-    const { users, playlists } = this.uw;
-    const user = await users.getUser(userID);
+  async hasPlayablePlaylist(user) {
+    const { playlists } = this.#uw;
+    if (!user.activePlaylist) {
+      return false;
+    }
+
     const playlist = await playlists.getUserPlaylist(user, user.activePlaylist);
     return playlist && playlist.size > 0;
   }
 
   /**
-   * @return {Promise<boolean>}
+   * @returns {Promise<boolean>}
    */
   isLocked() {
-    return this.uw.redis.get('waitlist:lock').then(Boolean);
+    return this.#uw.redis.get('waitlist:lock').then(Boolean);
   }
 
   /**
-   * @return {Promise<string[]>}
+   * @returns {Promise<string[]>}
    */
   getUserIDs() {
-    return this.uw.redis.lrange('waitlist', 0, -1);
+    return this.#uw.redis.lrange('waitlist', 0, -1);
   }
 
   /**
    * POST waitlist/ handler for joining the waitlist.
    *
-   * @return {Promise<string[]>}
+   * @param {User} user
+   * @returns {Promise<string[]>}
    * @private
    */
   async doJoinWaitlist(user) {
-    await this.uw.redis.rpush('waitlist', user.id);
+    await this.#uw.redis.rpush('waitlist', user.id);
 
     const waitlist = await this.getUserIDs();
 
-    this.uw.publish('waitlist:join', {
+    this.#uw.publish('waitlist:join', {
       userID: user.id,
       waitlist,
     });
@@ -103,21 +111,23 @@ class Waitlist {
   /**
    * POST waitlist/ handler for adding a (different) user to the waitlist.
    *
-   * @return {Promise<string[]>}
+   * @param {User} user
+   * @param {{ moderator: User, waitlist: string[], position: number }} options
+   * @returns {Promise<string[]>}
    * @private
    */
   async doAddToWaitlist(user, { moderator, waitlist, position }) {
     const clampedPosition = clamp(position, 0, waitlist.length);
 
     if (clampedPosition < waitlist.length) {
-      await this.uw.redis.linsert('waitlist', 'BEFORE', waitlist[clampedPosition], user.id);
+      await this.#uw.redis.linsert('waitlist', 'BEFORE', waitlist[clampedPosition], user.id);
     } else {
-      await this.uw.redis.rpush('waitlist', user.id);
+      await this.#uw.redis.rpush('waitlist', user.id);
     }
 
     const newWaitlist = await this.getUserIDs();
 
-    this.uw.publish('waitlist:add', {
+    this.#uw.publish('waitlist:add', {
       userID: user.id,
       moderatorID: moderator.id,
       position: clampedPosition,
@@ -134,29 +144,27 @@ class Waitlist {
    *
    * @param {string} userID
    * @param {{moderator?: User}} [options]
-   * @return {Promise<void>}
+   * @returns {Promise<void>}
    */
   async addUser(userID, { moderator } = {}) {
-    const { acl, users } = this.uw;
+    const { acl, users } = this.#uw;
 
     const user = await users.getUser(userID);
     if (!user) throw new UserNotFoundError({ id: userID });
 
     const canForceJoin = await acl.isAllowed(user, 'waitlist.join.locked');
     if (!canForceJoin && await this.isLocked()) {
-      throw new PermissionError('The waitlist is locked. Only staff can join.', {
-        requiredRole: 'waitlist.join.locked',
-      });
+      throw new WaitlistLockedError();
     }
 
     let waitlist = await this.getUserIDs();
     if (isInWaitlist(waitlist, user.id)) {
-      throw new PermissionError('You are already in the waitlist.');
+      throw new AlreadyInWaitlistError();
     }
     if (await this.isCurrentDJ(user.id)) {
-      throw new PermissionError('You are already currently playing.');
+      throw new AlreadyInWaitlistError();
     }
-    if (!(await this.hasValidPlaylist(user))) {
+    if (!(await this.hasPlayablePlaylist(user))) {
       throw new EmptyPlaylistError();
     }
 
@@ -164,7 +172,7 @@ class Waitlist {
       waitlist = await this.doJoinWaitlist(user);
     } else {
       if (!(await acl.isAllowed(moderator, 'waitlist.add'))) {
-        throw new PermissionError('You cannot add someone else to the waitlist.', {
+        throw new PermissionError({
           requiredRole: 'waitlist.add',
         });
       }
@@ -176,18 +184,18 @@ class Waitlist {
     }
 
     if (await this.isBoothEmpty()) {
-      await this.uw.booth.advance();
+      await this.#uw.booth.advance();
     }
   }
 
   /**
    * @param {string} userID
    * @param {number} position
-   * @param {{moderator?: User}} [options]
-   * @return {Promise<void>}
+   * @param {{moderator: User}} options
+   * @returns {Promise<void>}
    */
-  async moveUser(userID, position, { moderator } = {}) {
-    const { users } = this.uw;
+  async moveUser(userID, position, { moderator }) {
+    const { users } = this.#uw;
 
     const user = await users.getUser(userID.toLowerCase());
     if (!user) {
@@ -197,33 +205,33 @@ class Waitlist {
     let waitlist = await this.getUserIDs();
 
     if (!isInWaitlist(waitlist, user.id)) {
-      throw new PermissionError('That user is not in the waitlist.');
+      throw new UserNotInWaitlistError({ id: user.id });
     }
     if (await this.isCurrentDJ(user.id)) {
-      throw new PermissionError('That user is currently playing.');
+      throw new UserIsPlayingError({ id: user.id });
     }
-    if (!(await this.hasValidPlaylist(user.id))) {
+    if (!(await this.hasPlayablePlaylist(user))) {
       throw new EmptyPlaylistError();
     }
 
     const clampedPosition = clamp(position, 0, waitlist.length);
-    const beforeID = waitlist[clampedPosition] || null;
+    const beforeID = waitlist[clampedPosition] ?? null;
 
     if (beforeID === user.id) {
       // No change.
       return;
     }
 
-    await this.uw.redis.lrem('waitlist', 0, user.id);
+    await this.#uw.redis.lrem('waitlist', 0, user.id);
     if (beforeID) {
-      await this.uw.redis.linsert('waitlist', 'BEFORE', beforeID, user.id);
+      await this.#uw.redis.linsert('waitlist', 'BEFORE', beforeID, user.id);
     } else {
-      await this.uw.redis.rpush('waitlist', user.id);
+      await this.#uw.redis.rpush('waitlist', user.id);
     }
 
     waitlist = await this.getUserIDs();
 
-    this.uw.publish('waitlist:move', {
+    this.#uw.publish('waitlist:move', {
       userID: user.id,
       moderatorID: moderator.id,
       position: clampedPosition,
@@ -233,36 +241,39 @@ class Waitlist {
 
   /**
    * @param {string} userID
-   * @param {{moderator?: User}} [options]
-   * @return {Promise<void>}
+   * @param {{moderator: User}} options
+   * @returns {Promise<void>}
    */
-  async removeUser(userID, { moderator } = {}) {
-    const { acl, users } = this.uw;
+  async removeUser(userID, { moderator }) {
+    const { acl, users } = this.#uw;
     const user = await users.getUser(userID);
+    if (!user) {
+      throw new UserNotFoundError({ id: userID });
+    }
 
     const isRemoving = moderator && user.id !== moderator.id;
     if (isRemoving && !(await acl.isAllowed(moderator, 'waitlist.remove'))) {
-      throw new PermissionError('You need to be a moderator to do this.', {
+      throw new PermissionError({
         requiredRole: 'waitlist.remove',
       });
     }
 
     let waitlist = await this.getUserIDs();
     if (!isInWaitlist(waitlist, user.id)) {
-      throw new NotFoundError('That user is not in the waitlist.');
+      throw new UserNotInWaitlistError({ id: user.id });
     }
 
-    await this.uw.redis.lrem('waitlist', 0, user.id);
+    await this.#uw.redis.lrem('waitlist', 0, user.id);
 
     waitlist = await this.getUserIDs();
     if (isRemoving) {
-      this.uw.publish('waitlist:remove', {
+      this.#uw.publish('waitlist:remove', {
         userID: user.id,
         moderatorID: moderator.id,
         waitlist,
       });
     } else {
-      this.uw.publish('waitlist:leave', {
+      this.#uw.publish('waitlist:leave', {
         userID: user.id,
         waitlist,
       });
@@ -271,17 +282,17 @@ class Waitlist {
 
   /**
    * @param {{moderator: User}} options
-   * @return {Promise<void>}
+   * @returns {Promise<void>}
    */
   async clear({ moderator }) {
-    await this.uw.redis.del('waitlist');
+    await this.#uw.redis.del('waitlist');
 
     const waitlist = await this.getUserIDs();
     if (waitlist.length !== 0) {
       throw new Error('Could not clear the waitlist. Please try again.');
     }
 
-    this.uw.publish('waitlist:clear', {
+    this.#uw.publish('waitlist:clear', {
       moderatorID: moderator.id,
     });
   }
@@ -289,14 +300,14 @@ class Waitlist {
   /**
    * @param {boolean} lock
    * @param {User} moderator
-   * @return {Promise<void>}
+   * @returns {Promise<void>}
    * @private
    */
   async lockWaitlist(lock, moderator) {
     if (lock) {
-      await this.uw.redis.set('waitlist:lock', lock);
+      await this.#uw.redis.set('waitlist:lock', String(lock));
     } else {
-      await this.uw.redis.del('waitlist:lock');
+      await this.#uw.redis.del('waitlist:lock');
     }
 
     const isLocked = await this.isLocked();
@@ -305,7 +316,7 @@ class Waitlist {
       throw new Error(`Could not ${lock ? 'lock' : 'unlock'} the waitlist. Please try again.`);
     }
 
-    this.uw.publish('waitlist:lock', {
+    this.#uw.publish('waitlist:lock', {
       moderatorID: moderator.id,
       locked: isLocked,
     });
@@ -313,7 +324,7 @@ class Waitlist {
 
   /**
    * @param {{moderator: User}} options
-   * @return {Promise<void>}
+   * @returns {Promise<void>}
    */
   lock({ moderator }) {
     return this.lockWaitlist(true, moderator);
@@ -321,7 +332,7 @@ class Waitlist {
 
   /**
    * @param {{moderator: User}} options
-   * @return {Promise<void>}
+   * @returns {Promise<void>}
    */
   unlock({ moderator }) {
     return this.lockWaitlist(false, moderator);
@@ -329,7 +340,8 @@ class Waitlist {
 }
 
 /**
- * @return {Promise<void>}
+ * @param {import('../Uwave')} uw
+ * @returns {Promise<void>}
  */
 async function waitlistPlugin(uw) {
   uw.waitlist = new Waitlist(uw); // eslint-disable-line no-param-reassign
@@ -337,3 +349,4 @@ async function waitlistPlugin(uw) {
 }
 
 module.exports = waitlistPlugin;
+module.exports.Waitlist = Waitlist;

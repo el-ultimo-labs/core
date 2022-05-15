@@ -1,20 +1,29 @@
 'use strict';
 
+const has = require('has');
 const { Strategy } = require('passport');
-const { promisify } = require('util');
 const jwt = require('jsonwebtoken');
-const { PermissionError } = require('../errors');
+const { BannedError } = require('../errors');
 
-const jwtVerify = promisify(jwt.verify);
+/** @typedef {import('../models').User} User */
 
+/**
+ * @param {Record<string, string>} cookies
+ */
 function getCookieToken(cookies) {
   return cookies && cookies.uwsession;
 }
 
+/**
+ * @param {import('qs').ParsedQs} query
+ */
 function getQueryToken(query) {
-  return query && query.token;
+  return query && typeof query.token === 'string' ? query.token : null;
 }
 
+/**
+ * @param {import('http').IncomingHttpHeaders} headers
+ */
 function getHeaderToken(headers) {
   if (headers.authorization) {
     const parts = headers.authorization.split(' ');
@@ -25,37 +34,64 @@ function getHeaderToken(headers) {
   return null;
 }
 
+/**
+ * @param {unknown} obj
+ * @returns {obj is { id: string }}
+ */
+function isUserIDToken(obj) {
+  return typeof obj === 'object'
+    && obj !== null
+    && has(obj, 'id')
+    && typeof obj.id === 'string';
+}
+
+/** @typedef {(claim: { id: string }) => Promise<User|null>} GetUserFn */
+
 class JWTStrategy extends Strategy {
+  /**
+   * @param {Buffer|string} secret
+   * @param {GetUserFn} getUser
+   */
   constructor(secret, getUser) {
     super();
+    /** @private */
     this.secret = secret;
+    /** @private */
     this.getUser = getUser;
   }
 
-  authenticate(req, options) {
-    this.authenticateP(req, options).catch((err) => {
+  /**
+   * @param {import('express').Request} req
+   */
+  authenticate(req) {
+    this.authenticateP(req).catch((err) => {
       this.error(err);
     });
   }
 
+  /**
+   * @param {import('express').Request} req
+   * @private
+   */
   async authenticateP(req) {
     const { bans } = req.uwave;
 
     const token = getQueryToken(req.query)
-      || getHeaderToken(req.headers)
-      || getCookieToken(req.cookies);
+      ?? getHeaderToken(req.headers)
+      ?? getCookieToken(req.cookies);
     if (!token) {
       return this.pass();
     }
 
+    /** @type {unknown} */
     let value;
     try {
-      value = await jwtVerify(token, this.secret);
+      value = jwt.verify(token, this.secret);
     } catch (e) {
       return this.pass();
     }
 
-    if (!value) {
+    if (!isUserIDToken(value)) {
       return this.pass();
     }
 
@@ -70,7 +106,7 @@ class JWTStrategy extends Strategy {
     }
 
     if (await bans.isBanned(user)) {
-      throw new PermissionError('You have been banned');
+      throw new BannedError();
     }
 
     return this.success(user);

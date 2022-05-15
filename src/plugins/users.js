@@ -1,41 +1,50 @@
 'use strict';
 
 const bcrypt = require('bcryptjs');
-const createDebug = require('debug');
+const debug = require('debug')('uwave:users');
 const escapeStringRegExp = require('escape-string-regexp');
 const Page = require('../Page');
-const { UserNotFoundError } = require('../errors');
-const PasswordError = require('../errors/PasswordError');
+const { IncorrectPasswordError, UserNotFoundError } = require('../errors');
 
-const debug = createDebug('uwave:users');
+/**
+ * @typedef {import('../models').User} User
+ */
 
+/**
+ * @param {string} password
+ */
 function encryptPassword(password) {
   return bcrypt.hash(password, 10);
 }
 
+/**
+ * @param {User} user
+ */
 function getDefaultAvatar(user) {
   return `https://sigil.u-wave.net/${user.id}`;
 }
 
 class UsersRepository {
+  #uw;
+
+  /**
+   * @param {import('../Uwave')} uw
+   */
   constructor(uw) {
-    this.uw = uw;
+    this.#uw = uw;
   }
 
-  async getUsers(filter = null, page = {}) {
-    const User = this.uw.model('User');
-
-    if (filter && (typeof filter.offset === 'number' || typeof filter.limit === 'number')) {
-      page = filter; // eslint-disable-line no-param-reassign
-      filter = null; // eslint-disable-line no-param-reassign
-    }
-
-    debug('getUsers', filter, page);
+  /**
+   * @param {string} [filter]
+   * @param {{ offset?: number, limit?: number }} [pagination]
+   */
+  async getUsers(filter, pagination = {}) {
+    const { User } = this.#uw.models;
 
     const {
       offset = 0,
       limit = 50,
-    } = page;
+    } = pagination;
 
     const query = User.find()
       .skip(offset)
@@ -43,14 +52,13 @@ class UsersRepository {
     let queryFilter = null;
 
     if (filter) {
-      if (typeof filter !== 'string') throw new TypeError('User filter must be a string');
       queryFilter = {
         username: new RegExp(escapeStringRegExp(filter)),
       };
       query.where(queryFilter);
     }
 
-    const totalPromise = User.estimatedDocumentCount();
+    const totalPromise = User.estimatedDocumentCount().exec();
 
     const [
       users,
@@ -74,63 +82,107 @@ class UsersRepository {
     });
   }
 
-  getUser(id) {
-    const User = this.uw.model('User');
-    if (id instanceof User) {
-      return id;
-    }
-    return User.findById(id);
+  /**
+   * Get a user object by ID.
+   *
+   * @param {import('mongodb').ObjectId|string} id
+   * @returns {Promise<User|null>}
+   */
+  async getUser(id) {
+    const { User } = this.#uw.models;
+    const user = await User.findById(id);
+
+    return user;
   }
 
+  /**
+   * @typedef {object} LocalLoginOptions
+   * @prop {string} email
+   * @prop {string} password
+   *
+   * @typedef {object} SocialLoginOptions
+   * @prop {import('passport').Profile} profile
+   *
+   * @typedef {LocalLoginOptions & { type: 'local' }} DiscriminatedLocalLoginOptions
+   * @typedef {SocialLoginOptions & { type: string }} DiscriminatedSocialLoginOptions
+   *
+   * @param {DiscriminatedLocalLoginOptions | DiscriminatedSocialLoginOptions} options
+   * @returns {Promise<User>}
+   */
   login({ type, ...params }) {
     if (type === 'local') {
+      // @ts-expect-error TS2345: Pinky promise not to use 'local' name for custom sources
       return this.localLogin(params);
     }
+    // @ts-expect-error TS2345: Pinky promise not to use 'local' name for custom sources
     return this.socialLogin(type, params);
   }
 
+  /**
+   * @param {LocalLoginOptions} options
+   * @returns {Promise<User>}
+   */
   async localLogin({ email, password }) {
-    const Authentication = this.uw.model('Authentication');
+    const { Authentication } = this.#uw.models;
 
-    const auth = await Authentication.findOne({
+    /** @type {null | (import('../models').Authentication & { user: User })} */
+    const auth = /** @type {any} */ (await Authentication.findOne({
       email: email.toLowerCase(),
-    }).populate('user').exec();
-    if (!auth) {
+    }).populate('user').exec());
+    if (!auth || !auth.hash) {
       throw new UserNotFoundError({ email });
     }
 
     const correct = await bcrypt.compare(password, auth.hash);
     if (!correct) {
-      throw new PasswordError('That password is incorrect.');
+      throw new IncorrectPasswordError();
     }
 
     return auth.user;
   }
 
+  /**
+   * @param {string} type
+   * @param {SocialLoginOptions} options
+   * @returns {Promise<User>}
+   */
   async socialLogin(type, { profile }) {
     const user = {
       type,
       id: profile.id,
       username: profile.displayName,
-      avatar: profile.photos.length > 0 ? profile.photos[0].value : null,
+      avatar: profile.photos && profile.photos.length > 0 ? profile.photos[0].value : undefined,
     };
-    return this.uw.users.findOrCreateSocialUser(user);
+    return this.#uw.users.findOrCreateSocialUser(user);
   }
 
+  /**
+   * @typedef {object} FindOrCreateSocialUserOptions
+   * @prop {string} type
+   * @prop {string} id
+   * @prop {string} username
+   * @prop {string} [avatar]
+   *
+   * @param {FindOrCreateSocialUserOptions} options
+   * @returns {Promise<User>}
+   */
   async findOrCreateSocialUser({
     type,
     id,
     username,
     avatar,
   }) {
-    const User = this.uw.model('User');
-    const Authentication = this.uw.model('Authentication');
+    const { User, Authentication } = this.#uw.models;
 
     debug('find or create social', type, id);
 
+    // we need this type assertion because the `user` property actually contains
+    // an ObjectId in this return value. We are definitely filling in a User object
+    // below before using this variable.
+    /** @type {null | (Omit<import('../models').Authentication, 'user'> & { user: User })} */
     let auth = await Authentication.findOne({ type, id });
     if (auth) {
-      await auth.populate('user').execPopulate();
+      await auth.populate('user');
 
       if (avatar && auth.avatar !== avatar) {
         auth.avatar = avatar;
@@ -144,6 +196,9 @@ class UsersRepository {
       });
       await user.validate();
 
+      // @ts-expect-error TS2322: the type check fails because the `user` property actually contains
+      // an ObjectId in this return value. We are definitely filling in a User object below before
+      // using this variable.
       auth = new Authentication({
         type,
         user,
@@ -152,6 +207,9 @@ class UsersRepository {
         // HACK, providing a fake email so we can use `unique: true` on emails
         email: `${id}@${type}.sociallogin`,
       });
+
+      // Just so typescript knows `auth` is not null here.
+      if (!auth) throw new TypeError();
 
       try {
         await Promise.all([
@@ -166,8 +224,8 @@ class UsersRepository {
         throw e;
       }
 
-      this.uw.publish('user:create', {
-        user: user.toJSON(),
+      this.#uw.publish('user:create', {
+        user: user.id,
         auth: { type, id },
       });
     }
@@ -175,11 +233,14 @@ class UsersRepository {
     return auth.user;
   }
 
+  /**
+   * @param {{ username: string, email: string, password: string }} props
+   * @returns {Promise<User>}
+   */
   async createUser({
     username, email, password,
   }) {
-    const User = this.uw.model('User');
-    const Authentication = this.uw.model('Authentication');
+    const { User, Authentication } = this.#uw.models;
 
     debug('create user', username, email.toLowerCase());
 
@@ -214,16 +275,20 @@ class UsersRepository {
       throw e;
     }
 
-    this.uw.publish('user:create', {
-      user: user.toJSON(),
+    this.#uw.publish('user:create', {
+      user: user.id,
       auth: { type: 'local', email: email.toLowerCase() },
     });
 
     return user;
   }
 
+  /**
+   * @param {import('mongodb').ObjectId} id
+   * @param {string} password
+   */
   async updatePassword(id, password) {
-    const Authentication = this.uw.model('Authentication');
+    const { Authentication } = this.#uw.models;
 
     const user = await this.getUser(id);
     if (!user) throw new UserNotFoundError({ id });
@@ -242,16 +307,24 @@ class UsersRepository {
     }
   }
 
-  async updateUser(id, update = {}, opts = {}) {
+  /**
+   * @param {import('mongodb').ObjectId|string} id
+   * @param {Record<string, string>} update
+   * @param {{ moderator?: User }} [options]
+   */
+  async updateUser(id, update = {}, options = {}) {
     const user = await this.getUser(id);
     if (!user) throw new UserNotFoundError({ id });
 
     debug('update user', user.id, user.username, update);
 
-    const moderator = opts && opts.moderator && await this.getUser(opts.moderator);
+    const moderator = options && options.moderator;
 
+    /** @type {Record<string, string>} */
     const old = {};
     Object.keys(update).forEach((key) => {
+      // FIXME We should somehow make sure that the type of `key` extends `keyof LeanUser` here.
+      // @ts-expect-error TS7053
       old[key] = user[key];
     });
     Object.assign(user, update);
@@ -261,10 +334,12 @@ class UsersRepository {
     // Take updated keys from the Model again,
     // as it may apply things like Unicode normalization on the values.
     Object.keys(update).forEach((key) => {
+      // @ts-expect-error Infeasible to statically check properties here
+      // Hopefully the caller took care
       update[key] = user[key];
     });
 
-    this.uw.publish('user:update', {
+    this.#uw.publish('user:update', {
       userID: user.id,
       moderatorID: moderator ? moderator.id : null,
       old,
@@ -275,6 +350,9 @@ class UsersRepository {
   }
 }
 
+/**
+ * @param {import('../Uwave')} uw
+ */
 async function usersPlugin(uw) {
   uw.users = new UsersRepository(uw);
 }
