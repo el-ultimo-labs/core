@@ -282,9 +282,6 @@ async function vote(req) {
   if (currentDJ === null || currentHistoryID === null) {
     throw new HTTPError(412, 'Nobody is playing');
   }
-  if (currentDJ === user.id) {
-    throw new HTTPError(412, 'Cannot vote for your own plays');
-  }
   if (historyID && historyID !== currentHistoryID) {
     throw new HTTPError(412, 'Cannot vote for media that is not currently playing');
   }
