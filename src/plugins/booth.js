@@ -97,9 +97,9 @@ class Booth {
     const { redis } = this.#uw;
 
     const results = await redis.pipeline()
-      .smembers('booth:sadvotes')
-      .smembers('booth:upvotes')
-      .smembers('booth:downvotes')
+      .lrange('booth:sadvotes', 0, -1)
+      .lrange('booth:upvotes', 0, -1)
+      .lrange('booth:downvotes', 0, -1)
       .smembers('booth:favorites')
       .exec();
     assert(results);
