@@ -173,25 +173,7 @@ async function addVote(uw, userID, direction) {
     2: 'booth:sadvotes',
   };
 
-  const results = await uw.redis.multi()
-    .srem('booth:upvotes', userID)
-    .srem('booth:downvotes', userID)
-    .srem('booth:sadvotes', userID)
-    .sadd(boothType[direction], userID)
-    .exec();
-  assert(results);
-
-  const replacedUpvote = results[0][1] !== 0;
-  const replacedDownvote = results[1][1] !== 0;
-  const replacedSadvote = results[2][1] !== 0;
-
-  // Replaced an upvote by an upvote or a downvote by a downvote or a sadvote by a sadvote:
-  // the vote didn't change. We don't need to broadcast the non-change to everyone.
-  if ((replacedUpvote && direction === 1)
-    || (replacedDownvote && direction === -1)
-    || (replacedSadvote && direction === 2)) {
-    return;
-  }
+  await uw.redis.lpush(boothType[direction], userID);
 
   uw.publish('booth:vote', {
     userID, direction,
@@ -281,9 +263,6 @@ async function vote(req) {
   ]);
   if (currentDJ === null || currentHistoryID === null) {
     throw new HTTPError(412, 'Nobody is playing');
-  }
-  if (currentDJ === user.id) {
-    throw new HTTPError(412, 'Cannot vote for your own plays');
   }
   if (historyID && historyID !== currentHistoryID) {
     throw new HTTPError(412, 'Cannot vote for media that is not currently playing');
